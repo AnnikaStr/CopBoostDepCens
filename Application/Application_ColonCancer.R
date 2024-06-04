@@ -5,7 +5,7 @@
 
 library(copula)
 library(gamboostLSS)
-
+library(ggplot2)
 
 # load copulas
 source("Copulas/Clayton_dependentC.R")
@@ -16,11 +16,29 @@ source("Copulas/Gauss_dependentC.R")
 # load data
 load("colcancer.RData")
 
-seed = 1234
+
+ggplot(colcancer, aes(x = followup)) +
+  geom_histogram(data = subset(colcancer, death == 0), aes(fill = "No"), binwidth = 5, alpha = 0.7) +
+  geom_histogram(data = subset(colcancer, death == 1), aes(fill = "Yes"), binwidth = 5, alpha = 0.7) +
+  scale_fill_manual(name = "Event", values = c("No" = "#238443", "Yes" = "#D9F0A3")) +
+  theme_bw() + 
+  ylab("Count") + 
+  xlab("Follow-up time (months)") +
+  theme(plot.title = element_text(size=14, hjust = 0.5),
+        axis.title.x =  element_text(size = 15),
+        axis.title.y =  element_text(size = 15),
+        axis.text.x = element_text(size = 13),
+        axis.text.y = element_text(size = 13),
+        strip.text.x = element_text(size = 20),
+        strip.text.y = element_text(size = 18),
+        legend.text = element_text(size = 13), legend.title = element_text(size = 14)) 
+
+
 
 
 # Calculation of the negative log-likelihood based on the left-out folds of
 # 10-fold cross-validation for different combinations of copulas and margins
+seed = 1234
 
 
 
