@@ -298,7 +298,6 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
         if(fam == 1) cop = ellipCopula(family = "normal", dim = 2, param = rho[i])
         if(fam == 3) cop = archmCopula(family = "clayton", dim = 2, param = rho[i])
         if(fam == 4) cop = archmCopula(family = "gumbel", dim = 2, param = rho[i])
-        if(fam == 5) cop = archmCopula(family = "frank", dim = 2, param = rho[i])
         myMvd <- mvdc(copula = cop, margins = c("weibull", "weibull"), paramMargins = list(list( scale = (mu1[i]), shape = (sigma1[i])), 
                                                                                            list( scale = (mu2[i]), shape = (sigma2[i]))))
         vect <- rMvdc(1, myMvd)
@@ -312,7 +311,6 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
         if(fam == 1) cop = ellipCopula(family = "normal", dim = 2, param = rho[i])
         if(fam == 3) cop = archmCopula(family = "clayton", dim = 2, param = rho[i])
         if(fam == 4) cop = archmCopula(family = "gumbel", dim = 2, param = rho[i])
-        if(fam == 5) cop = archmCopula(family = "frank", dim = 2, param = rho[i])
         myMvd <- mvdc(copula = cop, margins = c("lnorm", "lnorm"), paramMargins = list(list( meanlog = (mu1[i]), sdlog = (sigma1[i])), 
                                                                                        list( meanlog = (mu2[i]), sdlog = (sigma2[i]))))
         
@@ -476,12 +474,10 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
   
   # Dependent Censoring: 
   if(marg.fam == "lnorm"){
-    if(fam == 5) familie_dep <- Frank_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
     if(fam == 4) familie_dep <- Gumbel_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
     if(fam == 3) familie_dep <- Clayton_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
     if(fam == 1) familie_dep <- Gauss_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
   }else{
-    if(fam == 5) familie_dep <- Frank_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL) 
     if(fam == 4) familie_dep <- Gumbel_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
     if(fam == 3) familie_dep <- Clayton_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL) 
     if(fam == 1) familie_dep <- Gauss_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
@@ -769,8 +765,7 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
     integral_cop_abs_cens <- sum( (abs_y_diff_cop_cens[-1] + abs_y_diff_cop_cens[-length(abs_y_diff_cop_cens)] ) * h / 2)
     integral_cox_abs_cens <- sum( (abs_y_diff_cox_cens[-1] + abs_y_diff_cox_cens[-length(abs_y_diff_cox_cens)] ) * h / 2)
   
-    
-    
+       
     int_true <- sum( (y_true[-1] + y_true[-length(y_true)] ) * h / 2)
     int_cop <-  sum( (y_est[-1] + y_est[-length(y_est)] ) * h / 2)
     int_cox <-  sum( (y_est_cox[-1] + y_est_cox[-length(y_est_cox)] ) * h / 2)
