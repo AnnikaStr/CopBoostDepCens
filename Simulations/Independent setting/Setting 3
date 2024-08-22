@@ -1,1 +1,355 @@
-library
+library(copula)
+library(gamboostLSS)
+library(survival)
+
+pdffz <- function(input){
+  
+  pdiff <- ifelse(input > 0.999999, 0.999999, input) 
+  pdiff <- ifelse(pdiff < 1e-16, 1e-16, pdiff) 
+  
+  return(pdiff)
+  
+}
+
+
+dvffz <- function(derivative){
+  
+  deriv <- ifelse(is.na(derivative), .Machine$double.eps, derivative)
+  deriv <- ifelse(deriv == Inf, 8.218407e+20, deriv)
+  deriv <- ifelse(deriv == -Inf, -8.218407e+20, deriv)
+  
+  return(deriv)
+}
+
+
+
+
+### other stuff because these did not load for me... 
+check_stabilization <- function(stabilization = c("none", "MAD", "L2")) {
+  stabilization <- match.arg(stabilization)
+  ## check if old stabilization interface is used and issue a warning
+  if (getOption("gamboostLSS_stab_ngrad")) {
+    warning("Usage of ", sQuote("options(gamboostLSS_stab_ngrad = TRUE)"),
+            " is deprecated.\n", "Use argument ", sQuote("stabilization"),
+            " in the fitting family. See ?Families for details.")
+    if (stabilization == "none")
+      warning(sQuote("stabilization"), " is set to ", dQuote("MAD"))
+  }
+  stabilization
+}
+
+
+stabilize_ngradient <- function(ngr, w = 1, stabilization) {
+  ## set which to MAD if gamboostLSS_stab_ngrad = TRUE and which == "none"
+  if (stabilization == "none" && getOption("gamboostLSS_stab_ngrad"))
+    stabilization <- "MAD"
+  ## stabilization using the mean absolute deviation (MAD)
+  if (stabilization == "MAD") {
+    div <- weighted.median(abs(ngr - weighted.median(ngr, w = w, na.rm = TRUE)),
+                           w = w, na.rm = TRUE)
+    div <- ifelse(div < 0.0001, 0.0001, div)
+    ngr <- ngr / div
+  }
+  if (stabilization == "L2") {
+    div <- sqrt(weighted.mean(ngr^2, w =w,  na.rm = TRUE))
+    div <- ifelse(div < 1e-04, 1e-04, div)
+    div <- ifelse(div > 1e+04, 1e+04, div)
+    ngr <- ngr / div
+  }
+  ngr
+}
+
+
+### Create our own weibull and log-logistic margins for gamboostLSS: 
+Custom_WeibullMu <- function(mu = NULL, sigma = NULL, stabilization){
+  
+  # y_check <- function(y){
+  #   if ((is.matrix(y) && NCOL(y)!=2))
+  #     stop("response should be a two-column matrix (y1 and y2) for this bivariate family")
+  # }
+  
+  # neg. log-likelihood
+  loss <- function(sigma, y, f=f){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = param, shape = sigma)
+    
+    SurvT <- pweibull(q = time, scale = param, shape = sigma, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    lik <- censind * log(pdfT) + (1 - censind) * log(SurvT)
+    
+    neglik <- - lik
+    
+    return(neglik)
+    
+  }
+  
+  # risk is sum of loss
+  risk <- function(y, f, w = 1) {
+    sum(w * loss(sigma = sigma, y = y, f = f))
+  }
+  
+  # negative gradient
+  ngradient <- function(y, f, w = 1){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = param, shape = sigma)
+    
+    SurvT <- pweibull(q = time, scale = param, shape = sigma, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    derlpdf_dermu <- (- 1 / ( param ) + (sigma - 1) * (- 1 / (param)) + (sigma) * (time)^(sigma)*(param)^(- (sigma) - 1) ) 
+    
+    derS_dermu <- - ( -(sigma * time * exp(- (time / (param) )^( sigma ) ) * ( time/ (param) )^(sigma - 1) * (1 / (param)^2 ) ) )
+    
+    
+    #### negative gradient:
+    ngr <- censind * ( derlpdf_dermu * exp(f) ) + (1-censind) * ( (1/SurvT) * derS_dermu * exp(f) )
+    
+    ngr <- stabilize_ngradient(ngr, w = w, stabilization)
+    
+    return(ngr)
+    
+    
+  }
+  
+  
+  offset <- function(y, w){
+    
+    if (!is.null( mu )) {
+      temp1 <- mu
+      temp1 <- log( temp1 )
+      
+      RET <- temp1
+    }else {
+      
+      
+      RET <- log(weighted.mean((y[,1] + weighted.mean(y[,1], w = w, na.rm = TRUE))/2, w = w, na.rm = TRUE)) 
+      
+    }
+    return(RET)
+  }
+  
+  
+  mboost:::Family(ngradient = ngradient, risk = risk, loss = loss,
+                  response = function(f) exp(f), 
+                  offset = offset,
+                  name = "Weibull distribution: mu (log link)")
+}
+
+Custom_WeibullSigma <- function(mu = NULL, sigma = NULL, stabilization){
+  
+  
+  # neg. log-likelihood
+  loss <- function(mu, y, f=f){
+    
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = mu, shape = param)
+    
+    SurvT <- pweibull(q = time, scale = mu, shape = param, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    lik <- censind * log(pdfT) + (1 - censind) * log(SurvT)
+    
+    neglik <- - lik
+    
+    return(neglik)
+    
+    
+  }
+  
+  # risk is sum of loss
+  risk <- function(y, f, w = 1) {
+    sum(w * loss(mu = mu, y = y, f = f))
+  }
+  
+  
+  # ngradient 
+  ngradient <- function(y, f, w = 1){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = mu, shape = param)
+    
+    SurvT <- pweibull(q = time, scale = mu, shape = param, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    derlpdf_dersigma <- ( (1/(param)) + log(time) - log(mu) - (time/ (mu))^(param) * log(time / (mu) )  )
+    
+    derS_dersigma <- - ( ( exp(- (time / (mu) )^(param) ) * ( (time / (mu) )^(param) * log(time / (mu) ) ) ) )
+    
+    
+    #### negative gradient:
+    ngr <- censind * ( derlpdf_dersigma * exp(f) ) + (1 - censind) * ( ( 1/SurvT ) * derS_dersigma * exp(f) )
+    
+    ngr <- stabilize_ngradient(ngr, w = w, stabilization)
+    
+    return(ngr)
+    
+    
+  }
+  
+  offset <- function(y, w){
+    
+    if (!is.null( sigma )) {
+      
+      
+      temp2 <- log( sigma )
+      
+      RET <- temp2
+      
+    }else{
+      
+      sigma_temp <- rep(0.1, length(y[,1]))
+      
+      RET <- log(mean(sigma_temp))
+      
+    }
+    return(RET)
+  }
+  
+  mboost:::Family(ngradient = ngradient, risk = risk, loss = loss,
+                  response = function(f) exp(f), 
+                  offset = offset,
+                  name = "Weibull distribution: sigma (log link)")
+}
+
+#------------------ complete gamboostLSS families
+Custom_WeibullFamily <- function (mu = NULL,  sigma = NULL, stabilization = c("none", "MAD", "L2")){
+  
+  stabilization <- check_stabilization(stabilization)
+  
+  Families(   mu = Custom_WeibullMu(mu = mu, sigma = sigma,  stabilization = stabilization ), 
+              sigma = Custom_WeibullSigma(mu = mu, sigma = sigma, stabilization = stabilization ), 
+              name = "Weibull distribution")
+}
+
+
+sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01, fam, marg.fam){
+
+  set.seed(seed+3)  
+  data <- as.data.frame(matrix(NA, ncol = p+2, nrow=n))
+  names(data) <- c("Y","d", paste0("x", 1:p))
+  
+  for(i in (1+2):(p+2)) data[,i] <- runif(n, -1, 1) 
+  z1 <- data[, 3]
+  z2 <- data[, 4]
+  z3 <- data[, 5]
+  z4 <- data[, 6]
+
+  test <- as.data.frame(matrix(NA, ncol = p+2, nrow=n.test))
+  names(test) <- c("Y","d", paste0("x", 1:p))
+  
+  for(i in (1+2):(p+2)) test[,i] <- runif(n, -1, 1) 
+  
+  w1 <- test[, 3]
+  w2 <- test[, 4]
+  w3 <- test[, 5]
+  w4 <- test[, 6]
+
+ if(censoring == 20){
+    if(marg.fam == "weibull"){
+      eta_mu1 <- -1 +  2 * z1 + 1*z3
+      eta_sigma1 <-   0.7  + 0.7*z3
+      eta_mu2 <-  0.8 -1* z2 + 1.5*z4
+      eta_sigma2 <- 0.5 * z2
+
+      eta_mu1_test <- -1 +  2 * w1 + 1*w3
+      eta_sigma1_test <-  0.7  + 0.7*w3
+      eta_mu2_test <- 0.8 - 1* w2 + 1.5*w4
+      eta_sigma2_test <- 0.5 * w2
+    }else{
+
+}else if(censoring == 50){
+    if(marg.fam == "weibull"){
+      eta_mu1 <- 0.7 +  2 * z1 + 1*z3
+      eta_sigma1 <-   0.7  + 0.7*z3
+      eta_mu2 <-  0.8 -1* z2 + 1.5*z4
+      eta_sigma2 <- 0.5 * z2
+    
+      eta_mu1_test <- 0.7 +  2 * w1 + 1*w3
+      eta_sigma1_test <-  0.7  + 0.7*w3
+      eta_mu2_test <- 0.8 - 1* w2 + 1.5*w4
+      eta_sigma2_test <- 0.5 * w2
+  
+}else{
+
+}
+}else{
+    if(marg.fam == "weibull"){
+      eta_mu1 <- 1 +  2 * z1 + 1*z3
+      eta_sigma1 <-   0.7  + 0.7*z3
+      eta_mu2 <-  -0.4 -1* z2 + 1.5*z4
+      eta_sigma2 <- 0.5 * z2
+
+      eta_mu1_test <- 1 +  2 * w1 + 1*w3
+      eta_sigma1_test <-  0.7  + 0.7*w3
+      eta_mu2_test <- -0.4 - 1* w2 + 1.5*w4
+      eta_sigma2_test <- 0.5 * w2
+    }else{
+
+    }
+  }
+
+  T1 <- rweibull(n, scale = exp(eta_mu1), shape = exp(eta_sigma1)) 
+  C  <- rweibull(n, scale = exp(eta_mu2), shape = exp(eta_sigma2)) 
+
+  data_train[,1] <- pmin(T1, C)
+  data_train[,2] <- as.numeric(data_train[,1] == T1)
+
+ T1_test <- rweibull(n.test, scale = exp(eta_mu1_test), shape = exp(eta_sigma1_test)) 
+  C_test <- rweibull(n.test, scale = exp(eta_mu2_test), shape = exp(eta_sigma2_test)) 
+  
+  
+  
+  test[,1] <- pmin(T1_test, C_test)
+  test[,2] <- as.numeric(test[,1] == T1_test)
+  
+  all <- rbind(data)
+  weights = rep(c(0,1),each = n/2)
+
