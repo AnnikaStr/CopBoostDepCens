@@ -814,16 +814,7 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
                                          AFTSurvival = val_b_aft_squared)
   
   
-  # ---- C-Index
-  Cindex_depcens <- concordance(Surv(test$Y, test$d) ~ pred.depCens$pred.mu1)$concordance
-  pred_cox <- -pred.glm
-  Cindex_cox <- concordance(Surv(test$Y, test$d) ~ pred_cox)$concordance
-  Cindex_aft <- concordance(Surv(test$Y, test$d) ~ pred.aft$pred.mu)$concordance
 
-  Performance$CIndex <- list(DepCens = Cindex_depcens,
-                             Cox = Cindex_cox,
-                             AFT = Cindex_aft)
-  
   # ---- Brier Score
   ComputeBrierScore <- function(S_hat, G_hat_atT, G_hat_atTSTAR, delta, time_star, time_i){
     
