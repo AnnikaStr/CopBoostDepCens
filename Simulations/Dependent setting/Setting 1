@@ -1,1 +1,1167 @@
-library
+library(copula)
+library(gamboostLSS)
+library(survival)
+library(VineCopula)
+
+source("Copulas/Gumbel_dependentC.R")
+source("Copulas/Gauss_dependentC.R")
+source("Copulas/Clayton_dependentC.R")
+
+
+## helper functions:
+pdffz <- function(input){
+  
+  pdiff <- ifelse(input > 0.999999, 0.999999, input) 
+  pdiff <- ifelse(pdiff < 1e-16, 1e-16, pdiff) 
+  
+  return(pdiff)
+  
+}
+
+
+dvffz <- function(derivative){
+  
+  deriv <- ifelse(is.na(derivative), .Machine$double.eps, derivative)
+  deriv <- ifelse(deriv == Inf, 8.218407e+20, deriv)
+  deriv <- ifelse(deriv == -Inf, -8.218407e+20, deriv)
+  
+  return(deriv)
+}
+
+
+
+
+### other stuff because these did not load for me... 
+check_stabilization <- function(stabilization = c("none", "MAD", "L2")) {
+  stabilization <- match.arg(stabilization)
+  ## check if old stabilization interface is used and issue a warning
+  if (getOption("gamboostLSS_stab_ngrad")) {
+    warning("Usage of ", sQuote("options(gamboostLSS_stab_ngrad = TRUE)"),
+            " is deprecated.\n", "Use argument ", sQuote("stabilization"),
+            " in the fitting family. See ?Families for details.")
+    if (stabilization == "none")
+      warning(sQuote("stabilization"), " is set to ", dQuote("MAD"))
+  }
+  stabilization
+}
+
+
+stabilize_ngradient <- function(ngr, w = 1, stabilization) {
+  ## set which to MAD if gamboostLSS_stab_ngrad = TRUE and which == "none"
+  if (stabilization == "none" && getOption("gamboostLSS_stab_ngrad"))
+    stabilization <- "MAD"
+  ## stabilization using the mean absolute deviation (MAD)
+  if (stabilization == "MAD") {
+    div <- weighted.median(abs(ngr - weighted.median(ngr, w = w, na.rm = TRUE)),
+                           w = w, na.rm = TRUE)
+    div <- ifelse(div < 0.0001, 0.0001, div)
+    ngr <- ngr / div
+  }
+  if (stabilization == "L2") {
+    div <- sqrt(weighted.mean(ngr^2, w =w,  na.rm = TRUE))
+    div <- ifelse(div < 1e-04, 1e-04, div)
+    div <- ifelse(div > 1e+04, 1e+04, div)
+    ngr <- ngr / div
+  }
+  ngr
+}
+
+
+### Weibull margins for AFT models: 
+Custom_WeibullMu <- function(mu = NULL, sigma = NULL, stabilization){
+  
+
+  # neg. log-likelihood
+  loss <- function(sigma, y, f=f){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = param, shape = sigma)
+    
+    SurvT <- pweibull(q = time, scale = param, shape = sigma, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    lik <- censind * log(pdfT) + (1 - censind) * log(SurvT)
+    
+    neglik <- - lik
+    
+    return(neglik)
+    
+  }
+  
+  # risk is sum of loss
+  risk <- function(y, f, w = 1) {
+    sum(w * loss(sigma = sigma, y = y, f = f))
+  }
+  
+  # negative gradient
+  ngradient <- function(y, f, w = 1){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = param, shape = sigma)
+    
+    SurvT <- pweibull(q = time, scale = param, shape = sigma, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    derlpdf_dermu <- (- 1 / ( param ) + (sigma - 1) * (- 1 / (param)) + (sigma) * (time)^(sigma)*(param)^(- (sigma) - 1) ) 
+    
+    derS_dermu <- - ( -(sigma * time * exp(- (time / (param) )^( sigma ) ) * ( time/ (param) )^(sigma - 1) * (1 / (param)^2 ) ) )
+    
+    
+    #### negative gradient:
+    ngr <- censind * ( derlpdf_dermu * exp(f) ) + (1-censind) * ( (1/SurvT) * derS_dermu * exp(f) )
+    
+    ngr <- stabilize_ngradient(ngr, w = w, stabilization)
+    
+    return(ngr)
+    
+    
+  }
+  
+  
+  offset <- function(y, w){
+    
+    if (!is.null( mu )) {
+      temp1 <- mu
+      temp1 <- log( temp1 )
+      
+      RET <- temp1
+    }else {
+      
+      
+      RET <- log(weighted.mean((y[,1] + weighted.mean(y[,1], w = w, na.rm = TRUE))/2, w = w, na.rm = TRUE)) 
+      
+    }
+    return(RET)
+  }
+  
+  
+  mboost:::Family(ngradient = ngradient, risk = risk, loss = loss,
+                  response = function(f) exp(f), 
+                  offset = offset,
+                  name = "Weibull distribution: mu (log link)")
+}
+
+Custom_WeibullSigma <- function(mu = NULL, sigma = NULL, stabilization){
+  
+  
+  # neg. log-likelihood
+  loss <- function(mu, y, f=f){
+    
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = mu, shape = param)
+    
+    SurvT <- pweibull(q = time, scale = mu, shape = param, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    lik <- censind * log(pdfT) + (1 - censind) * log(SurvT)
+    
+    neglik <- - lik
+    
+    return(neglik)
+    
+    
+  }
+  
+  # risk is sum of loss
+  risk <- function(y, f, w = 1) {
+    sum(w * loss(mu = mu, y = y, f = f))
+  }
+  
+  
+  # ngradient 
+  ngradient <- function(y, f, w = 1){
+    
+    time <- y[,1]
+    censind <- y[,2]
+    
+    # in here this is MU or vartheta1
+    param <- exp(f)
+    
+    pdfT <- dweibull(x = time, scale = mu, shape = param)
+    
+    SurvT <- pweibull(q = time, scale = mu, shape = param, lower.tail = FALSE)
+    
+    
+    ## Small check
+    pdfT <- dvffz(pdfT)
+    
+    SurvT <- pdffz(SurvT)
+    
+    
+    derlpdf_dersigma <- ( (1/(param)) + log(time) - log(mu) - (time/ (mu))^(param) * log(time / (mu) )  )
+    
+    derS_dersigma <- - ( ( exp(- (time / (mu) )^(param) ) * ( (time / (mu) )^(param) * log(time / (mu) ) ) ) )
+    
+    
+    #### negative gradient:
+    ngr <- censind * ( derlpdf_dersigma * exp(f) ) + (1 - censind) * ( ( 1/SurvT ) * derS_dersigma * exp(f) )
+    
+    ngr <- stabilize_ngradient(ngr, w = w, stabilization)
+    
+    return(ngr)
+    
+    
+  }
+  
+  offset <- function(y, w){
+    
+    if (!is.null( sigma )) {
+      
+      
+      temp2 <- log( sigma )
+      
+      RET <- temp2
+      
+    }else{
+      
+      sigma_temp <- rep(0.1, length(y[,1]))
+      
+      RET <- log(mean(sigma_temp))
+      
+    }
+    return(RET)
+  }
+  
+  mboost:::Family(ngradient = ngradient, risk = risk, loss = loss,
+                  response = function(f) exp(f), 
+                  offset = offset,
+                  name = "Weibull distribution: sigma (log link)")
+}
+
+#------------------ complete gamboostLSS families
+Custom_WeibullFamily <- function (mu = NULL,  sigma = NULL, stabilization = c("none", "MAD", "L2")){
+  
+  stabilization <- check_stabilization(stabilization)
+  
+  Families(   mu = Custom_WeibullMu(mu = mu, sigma = sigma,  stabilization = stabilization ), 
+              sigma = Custom_WeibullSigma(mu = mu, sigma = sigma, stabilization = stabilization ), 
+              name = "Weibull distribution")
+}
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#############################################################################################################
+#############################################################################################################
+
+sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.01, fam, marg.fam, indep = F){
+  
+  
+  data.gen <- function(seed, n, mu1, mu2, sigma1, sigma2, rho, fam, marg.fam){
+   
+   set.seed(seed+3)
+
+   if(marg.fam == "weibull"){
+      y1 <- vector(length = length(mu1))
+      y2 <- vector(length = length(mu2))
+      for(i in 1:length(mu1)){
+        if(fam == 1) cop = ellipCopula(family = "normal", dim = 2, param = rho[i])
+        if(fam == 3) cop = archmCopula(family = "clayton", dim = 2, param = rho[i])
+        if(fam == 4) cop = archmCopula(family = "gumbel", dim = 2, param = rho[i])
+        myMvd <- mvdc(copula = cop, margins = c("weibull", "weibull"), paramMargins = list(list( scale = (mu1[i]), shape = (sigma1[i])), 
+                                                                                           list( scale = (mu2[i]), shape = (sigma2[i]))))
+        vect <- rMvdc(1, myMvd)
+        y1[i] <- vect[,1]
+        y2[i] <- vect[,2]
+      }
+    }else{
+      y1 <- vector(length = length(mu1))
+      y2 <- vector(length = length(mu2))
+      for(i in 1:length(mu1)){
+        if(fam == 1) cop = ellipCopula(family = "normal", dim = 2, param = rho[i])
+        if(fam == 3) cop = archmCopula(family = "clayton", dim = 2, param = rho[i])
+        if(fam == 4) cop = archmCopula(family = "gumbel", dim = 2, param = rho[i])
+        myMvd <- mvdc(copula = cop, margins = c("lnorm", "lnorm"), paramMargins = list(list( meanlog = (mu1[i]), sdlog = (sigma1[i])), 
+                                                                                       list( meanlog = (mu2[i]), sdlog = (sigma2[i]))))
+        
+        
+        vect <- rMvdc(1, myMvd)
+        y1[i] <- vect[,1]
+        y2[i] <- vect[,2]
+    }
+    }
+   
+    
+    Y <- pmin(y1,y2)
+    d1 <- as.numeric(Y == y1)
+    
+    return(data.frame(Y,d = d1))
+  }
+  
+
+  
+  ######################################################################################
+  ### ----- Data generation
+  n = n.train + n.mstop
+
+  set.seed(seed+3)
+  
+  X_train <- matrix(NA, ncol = p, nrow = n)
+  for(i in 1:p){
+    X_train[,i] <- runif(n, -1, 1)
+  }
+  colnames(X_train) <- paste0("X", 1:p)
+  
+  X_test <- matrix(NA, ncol = p, nrow = n)
+  for(i in 1:p){
+    X_test[,i] <- runif(n, -0.95, 0.95)
+  }
+  
+  
+  if(censoring == 20){
+    if(marg.fam == "weibull"){
+     eta_mu1    <- -1 + 2 * X_train[,1] + 1 * X_train[,3]
+     eta_mu2    <-  0.8 - 1 * X_train[,2] + 1.5 * X_train[,4]
+     mu1     <- exp(eta_mu1)
+     mu2     <- exp(eta_mu2)
+     
+     eta_mu1_test    <- -1 + 2 * X_test[,1] + 1 * X_test[,3]
+     eta_mu2_test    <-  0.8 - 1 * X_test[,2] + 1.5 * X_test[,4]
+     mu1_test     <- exp(eta_mu1_test)
+     mu2_test     <- exp(eta_mu2_test)
+    }else{
+    eta_mu1    <- -0.9 + 2 * X_train[,1] + 1 * X_train[,3]
+    eta_mu2    <-  0.8 - 1 * X_train[,2] + 1.5 * X_train[,4]
+    mu1     <- (eta_mu1)
+    mu2     <- (eta_mu2)
+    
+    eta_mu1_test    <- -0.9 + 2 * X_test[,1] + 1 * X_test[,3]
+    eta_mu2_test    <-  0.8 - 1 * X_test[,2] + 1.5 * X_test[,4]
+    mu1_test     <- (eta_mu1_test)
+    mu2_test     <- (eta_mu2_test)
+    
+    }
+  } else if(censoring == 50){
+    if(marg.fam == "weibull"){
+      eta_mu1    <- 0.7 + 2 * X_train[,1] + 1 * X_train[,3]
+      eta_mu2    <-  0.8 - 1 * X_train[,2] + 1.5 * X_train[,4]
+      mu1     <- exp(eta_mu1)
+      mu2     <- exp(eta_mu2)
+      
+      eta_mu1_test    <- 0.7 + 2 * X_test[,1] + 1 * X_test[,3]
+      eta_mu2_test    <-  0.8 - 1 * X_test[,2] + 1.5 * X_test[,4]
+      mu1_test     <- exp(eta_mu1_test)
+      mu2_test     <- exp(eta_mu2_test)
+    }else{
+      eta_mu1    <- 1 + 2 * X_train[,1] + 1 * X_train[,3]
+      eta_mu2    <-  0.8 - 1 * X_train[,2] + 1.5 * X_train[,4]
+      mu1     <- (eta_mu1)
+      mu2     <- (eta_mu2)
+      
+      eta_mu1_test    <- 1 + 2 * X_test[,1] + 1 * X_test[,3]
+      eta_mu2_test    <-  0.8 - 1 * X_test[,2] + 1.5 * X_test[,4]
+      mu1_test     <- (eta_mu1_test)
+      mu2_test     <- (eta_mu2_test)
+    }
+  }else{
+    if(marg.fam == "weibull"){
+      eta_mu1    <- 1 + 2 * X_train[,1] + 1 * X_train[,3]
+      eta_mu2    <-  -0.4 - 1 * X_train[,2] + 1.5 * X_train[,4]
+      mu1     <- exp(eta_mu1)
+      mu2     <- exp(eta_mu2)
+      
+      eta_mu1_test    <- 1 + 2 * X_test[,1] + 1 * X_test[,3]
+      eta_mu2_test    <-  -0.4 - 1 * X_test[,2] + 1.5 * X_test[,4]
+      mu1_test     <- exp(eta_mu1_test)
+      mu2_test     <- exp(eta_mu2_test)
+    }else{
+      eta_mu1    <- 1.5 + 2 * X_train[,1] + 1 * X_train[,3]
+      eta_mu2    <- -0.4 - 1 * X_train[,2] + 1.5 * X_train[,4]
+      mu1     <- (eta_mu1)
+      mu2     <- (eta_mu2)
+      
+      eta_mu1_test    <- 1.5 + 2 * X_test[,1] + 1 * X_test[,3]
+      eta_mu2_test    <- -0.4 - 1 * X_test[,2] + 1.5 * X_test[,4]
+      mu1_test     <- (eta_mu1_test)
+      mu2_test     <- (eta_mu2_test)
+    }
+  }
+  
+  eta_sigma1 <-  0.7  + 0.7 * X_train[,3]
+  eta_sigma2 <-  0.5 * X_train[,2]
+  eta_theta  <- 2 + 1.5 * X_train[,5]
+
+  sigma1  <- exp(eta_sigma1)
+  sigma2  <- exp(eta_sigma2)
+  
+  eta_sigma1_test <-  0.7  + 0.7 * X_test[,3]
+  eta_sigma2_test <-  0.5 * X_test[,2]
+  eta_theta_test  <- 2 + 1.5 * X_test[,5]
+  
+  sigma1_test  <- exp(eta_sigma1_test)
+  sigma2_test  <- exp(eta_sigma2_test)
+  
+  if(fam == 5) rho <- eta_theta; rho_test = eta_theta_test
+  if(fam == 4) rho <- exp(eta_theta)  + 1e-07; rho_test <- exp(eta_theta_test) + 1e-07
+  if(fam == 3) rho <- exp(eta_theta) + 1e-07; rho_test <- exp(eta_theta_test) + 1e-07
+  if(fam == 1){
+    rho <- tanh(eta_theta)
+    rho_test = tanh(eta_theta_test)     
+  } 
+  
+  weights <- c(rep(1, times = n.train), rep(0, times = n.mstop))
+  
+  train_mstop <- data.frame(data.gen(seed, 
+                    n = n,
+                    mu1 = mu1, 
+                    mu2 = mu2, 
+                    sigma1 = sigma1, 
+                    sigma2 = sigma2, 
+                    rho = rho, 
+                    fam = fam, 
+                    marg.fam = marg.fam), X_train) 
+  
+  CensoringRate <- table(train_mstop$d)/n
+  
+  test <- data.frame(data.gen(seed, 
+                               n = n.test,
+                               mu1 = mu1_test, 
+                               mu2 = mu2_test, 
+                               sigma1 = sigma1_test, 
+                               sigma2 = sigma2_test, 
+                               rho = rho_test, 
+                               fam = fam, 
+                               marg.fam = marg.fam), X_test) 
+  
+  
+  ####################################################################################
+  #### --- Model fit
+  
+  form_dep <- as.formula(cbind(Y,d)~.)
+  form_cox <- as.formula(Surv(Y,d)~.)
+  form_aft <- as.formula(Surv(Y,d)~.)
+  form_aft_cens <- as.formula(Surv(Y,(1-d))~.)
+  
+  # Dependent Censoring: 
+  if(marg.fam == "lnorm"){
+    if(fam == 4) familie_dep <- Gumbel_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
+    if(fam == 3) familie_dep <- Clayton_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
+    if(fam == 1) familie_dep <- Gauss_Cop_depCens(marg1 = "LOGNO", marg2 = "LOGNO", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
+  }else{
+    if(fam == 4) familie_dep <- Gumbel_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
+    if(fam == 3) familie_dep <- Clayton_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL) 
+    if(fam == 1) familie_dep <- Gauss_Cop_depCens(marg1 = "WEI", marg2 = "WEI", dep = T, mu1=NULL, mu2 = NULL, sigma1 = NULL, sigma2 =  NULL, rho = NULL)
+  }
+  
+  time_dep = Sys.time()
+  mod <- glmboostLSS(form_dep, data= train_mstop, weights = weights, families = familie_dep, 
+                     control = boost_control(nu=step.length, mstop=2000, risk = "oobag", trace = T
+                     ), method = "noncyclic")
+  
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  if(MSTOP >= 1990){
+    mod[3000]
+  }
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  
+  if(MSTOP >= 2990){
+    mod[3500]
+  }
+  
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  if(MSTOP >= 3490){
+    mod[4000]
+  }
+  
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  if(MSTOP >= 3990){
+    mod[5000]
+  }
+  
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  if(MSTOP >= 4990){
+    mod[6000]
+  }
+  
+  MSTOP <- which.min(risk(mod,merge = T))
+  
+  if(MSTOP >= 5990){
+    mod[8000]
+  }
+  
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  if(MSTOP >= 7990){
+    mod[10000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  if(MSTOP >= 9990){
+    mod[12000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  if(MSTOP >= 11990){
+    mod[15000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  if(MSTOP >= 14990){
+    mod[17000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  if(MSTOP >= 16990){
+    mod[19000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  
+  if(MSTOP >= 18990){
+    mod[20000]
+  }
+  
+  MSTOP <- which.min(risk(mod, merge=T))
+  
+  mod <- glmboostLSS(form_dep, data= train_mstop, families = familie_dep, 
+                     control = boost_control(nu=step.length, mstop=MSTOP, trace = T
+                     ), method = "noncyclic")
+  runtime_dep = Sys.time() - time_dep
+  units(runtime_dep) = "mins"
+  
+  coef_depCens <- coef(mod, off2int = T)
+  
+  pred.depCens <-  list()
+  pred.depCens$pred.mu1 <- predict(mod$mu1, newdata = test, type = 'response')
+  pred.depCens$pred.mu2 <- predict(mod$mu2, newdata = test, type = 'response')
+  pred.depCens$pred.sigma1 <- predict(mod$sigma1, newdata = test, type = 'response')
+  pred.depCens$pred.sigma2 <- predict(mod$sigma2, newdata = test, type = 'response')
+  pred.depCens$pred.rho <- predict(mod$rho, newdata = test, type = 'response')
+  
+  Dependence <- 0
+  Dependence <- list(RangeDependence = range(predict(mod$rho, type = "response")),
+                       RangeTau = VineCopula::BiCopPar2Tau(family=fam,
+                                                           par= range(predict(mod$rho, type = "response"))))
+ 
+ 
+  
+  ### --- Cox model
+  time_cox = Sys.time()
+  glm <- glmboost(form_cox , data = train_mstop, weights = weights, control = boost_control(mstop = 1000, risk = "oobag", nu = 0.1), family = CoxPH())
+  
+  glm_mstop <- which.min(risk(glm))
+  
+  if(glm_mstop > 990){
+    glm[3000]
+  }
+  
+  glm_mstop <- which.min(risk(glm))
+  
+  train <- train_mstop[weights == 1, ]
+  glm <- glmboost(form_cox, data = train, control = boost_control(mstop = glm_mstop, nu = 0.1), family = CoxPH())
+  
+  runtime_cox = Sys.time() - time_cox
+  units(runtime_cox) = "mins"
+  
+  coef_cox <- coef(glm, off2int = T)
+  pred.glm <- predict(glm, newdata = test)
+  
+
+  ### --- AFT model
+  if(marg.fam == "weibull"){
+    familie_aft <- Custom_WeibullFamily()
+  }else{
+    familie_aft <- LogNormalLSS()
+  }
+  
+  time_aft <- Sys.time()
+  aft <- glmboostLSS(form_aft, data = train_mstop, weights = weights, control = boost_control(mstop = 1000, risk = "oobag", nu = step.length), families = familie_aft)
+  
+  aft_mstop <- which.min(risk(aft,merge=T))
+  
+  if(aft_mstop > 990){
+    aft[3000]
+  }
+  
+  aft_mstop <- which.min(risk(aft,merge=T))
+  
+  if(aft_mstop > 2990){
+    aft[5000]
+  }
+  
+  aft_mstop <- which.min(risk(aft,merge=T))
+  
+  if(aft_mstop > 4990){
+    aft[8000]
+  }
+  
+  aft_mstop <- which.min(risk(aft,merge=T))
+  
+  if(aft_mstop > 7990){
+    aft[10000]
+  }
+  
+  aft_mstop <- which.min(risk(aft,merge=T))
+  
+
+  aft <- glmboostLSS(form_aft, data = train_mstop, weights = weights, control = boost_control(mstop = aft_mstop, nu = step.length), families = familie_aft)
+  runtime_aft = Sys.time() - time_aft
+  units(runtime_aft) = "mins"
+  
+  coef_aft <- coef(aft, off2int = T)
+  
+  pred.aft <-  list()
+  pred.aft$pred.mu <- predict(aft$mu, newdata = test, type = 'response')
+  pred.aft$pred.sigma <- predict(aft$sigma, newdata = test, type = 'response')
+  
+  
+  Runtime <- list()
+  Runtime$DepCens <- runtime_dep
+  Runtime$Cox <- runtime_cox
+  Runtime$AFT <- runtime_aft
+                      
+  
+  MSTOP_total <- list()
+  MSTOP_total$DepCens <- MSTOP
+  MSTOP_total$Cox <- glm_mstop
+  MSTOP_total$AFT <- aft_mstop
+  
+  Coefficents <- list()
+  Coefficents$depCens <- coef_depCens
+  Coefficents$Cox <- coef_cox
+  Coefficents$AFT <- coef_aft
+  
+  Prediction <- list()
+  Prediction$DepCens <- pred.depCens
+  Prediction$Cox <- pred.glm
+  Prediction$AFT <- pred.aft
+  
+  #########################################################################
+  #### ---- Evaluation
+
+  
+  # --- Integrals
+  a <- 0
+  b <- max(test$Y)
+  
+  sub_int <- 2000
+  h <- (b - a) / sub_int
+  x <- seq(a, b, length.out = sub_int+1)
+  
+  # Prediction for cox model
+  Cox_ResponsePreds <- exp(pred.glm)
+  baseline_surv <- survival::survfit(survival::Surv(Y, d) ~ 1, data = train) 
+  baseline_surv_times <- summary(baseline_surv, times = x, extend = TRUE, cumhaz = TRUE)
+  
+  baseline_cens <- survival::survfit(survival::Surv(Y, (1-d)) ~ 1, data = train) 
+  baseline_cens_times <- summary(baseline_cens, times = x, extend = TRUE, cumhaz = TRUE)
+  
+  val_b_cop_squared <- vector()
+  val_b_cox_squared <- vector()
+  val_b_aft_squared <- vector()
+  
+  val_b_cop_squared_cens <- vector()
+  val_b_cox_squared_cens <- vector()
+  val_b_aft_squared_cens <- vector()
+  
+  val_b_cop_abs <- vector()
+  val_b_cox_abs <- vector()
+  val_b_aft_abs <- vector()
+  
+  val_b_cop_abs_cens <- vector()
+  val_b_cox_abs_cens <- vector()
+  val_b_aft_abs_cens <- vector()
+  
+  val_b_cop_abs_test <- vector()
+  val_b_cox_abs_test <- vector()
+  val_b_aft_abs_test <- vector()
+  
+  
+  for(i in 1:dim(test)[1]){
+    
+    if(marg.fam == "weibull"){
+      y_true <- sapply(x, function(x) pweibull(q = x, scale = mu1_test[i], shape = sigma1_test[i], lower.tail = FALSE))
+      y_est  <- sapply(x, function(x) pweibull(q = x, scale =  pred.depCens$pred.mu1[i], shape =  pred.depCens$pred.mu1[i], lower.tail = FALSE))
+      y_est_aft  <- sapply(x, function(x) pweibull(q = x, scale = pred.aft$pred.mu[i], shape = pred.aft$pred.sigma[i], lower.tail = FALSE))
+      
+      y_true_cens <- sapply(x, function(x) pweibull(q = x, scale = mu2_test[i], shape = sigma2_test[i], lower.tail = FALSE))
+      y_est_cens  <- sapply(x, function(x) pweibull(q = x, scale =  pred.depCens$pred.mu2[i], shape =  pred.depCens$pred.mu2[i], lower.tail = FALSE))
+    }else{
+      y_true <- sapply(x, function(x) plnorm(q = x, meanlog = mu1_test[i], sdlog = sigma1_test[i], lower.tail = FALSE))
+      y_est  <- sapply(x, function(x) plnorm(q = x, meanlog =  pred.depCens$pred.mu1[i], sdlog = ( pred.depCens$pred.sigma1[i]), lower.tail = FALSE))
+      y_est_aft  <- sapply(x, function(x) plnorm(q = x, meanlog = pred.aft$pred.mu[i], sdlog = pred.aft$pred.sigma[i], lower.tail = FALSE))
+      
+      y_true_cens <- sapply(x, function(x) plnorm(q = x, meanlog = mu2_test[i], sdlog = sigma2_test[i], lower.tail = FALSE))
+      y_est_cens  <- sapply(x, function(x) plnorm(q = x, meanlog =  pred.depCens$pred.mu2[i], sdlog = ( pred.depCens$pred.sigma2 [i]), lower.tail = FALSE))
+    }
+    
+    y_est_cox  <- sapply(1:length(x), function(x) exp( - baseline_surv_times$cumhaz[x] * Cox_ResponsePreds[i] ))
+    y_est_cox_cens  <- sapply(1:length(x), function(x) exp( - baseline_cens_times$cumhaz[x] * Cox_ResponsePreds[i] ))
+    
+    
+    squared_y_diff_cop <- (y_true - y_est)^2
+    squared_y_diff_cox <- (y_true - y_est_cox)^2
+    squared_y_diff_aft <- (y_true - y_est_aft)^2
+    integral_cop <- sum( (squared_y_diff_cop[-1] + squared_y_diff_cop[-length(squared_y_diff_cop)] ) * h / 2)
+    integral_cox <- sum( (squared_y_diff_cox[-1] + squared_y_diff_cox[-length(squared_y_diff_cox)] ) * h / 2)
+    integral_aft <- sum( (squared_y_diff_aft[-1] + squared_y_diff_aft[-length(squared_y_diff_aft)] ) * h / 2)
+    
+    squared_y_diff_cop_cens <- (y_true_cens - y_est_cens)^2
+    squared_y_diff_cox_cens <- (y_true_cens - y_est_cox_cens)^2
+    integral_cop_cens <- sum( (squared_y_diff_cop_cens[-1] + squared_y_diff_cop_cens[-length(squared_y_diff_cop_cens)] ) * h / 2)
+    integral_cox_cens <- sum( (squared_y_diff_cox_cens[-1] + squared_y_diff_cox_cens[-length(squared_y_diff_cox_cens)] ) * h / 2)
+
+    
+    abs_y_diff_cop <- abs(y_true - y_est)
+    abs_y_diff_cox <- abs(y_true - y_est_cox)
+    abs_y_diff_aft <- abs(y_true - y_est_aft)
+    integral_cop_abs <- sum( (abs_y_diff_cop[-1] + abs_y_diff_cop[-length(abs_y_diff_cop)] ) * h / 2)
+    integral_cox_abs <- sum( (abs_y_diff_cox[-1] + abs_y_diff_cox[-length(abs_y_diff_cox)] ) * h / 2)
+    integral_aft_abs <- sum( (abs_y_diff_aft[-1] + abs_y_diff_aft[-length(abs_y_diff_aft)] ) * h / 2)
+    
+    abs_y_diff_cop_cens <- abs(y_true_cens - y_est_cens)
+    abs_y_diff_cox_cens <- abs(y_true_cens - y_est_cox_cens)
+    integral_cop_abs_cens <- sum( (abs_y_diff_cop_cens[-1] + abs_y_diff_cop_cens[-length(abs_y_diff_cop_cens)] ) * h / 2)
+    integral_cox_abs_cens <- sum( (abs_y_diff_cox_cens[-1] + abs_y_diff_cox_cens[-length(abs_y_diff_cox_cens)] ) * h / 2)
+  
+       
+    int_true <- sum( (y_true[-1] + y_true[-length(y_true)] ) * h / 2)
+    int_cop <-  sum( (y_est[-1] + y_est[-length(y_est)] ) * h / 2)
+    int_cox <-  sum( (y_est_cox[-1] + y_est_cox[-length(y_est_cox)] ) * h / 2)
+    int_aft <-  sum( (y_est_aft[-1] + y_est_aft[-length(y_est_aft)] ) * h / 2)
+    
+    test_int_surv_cop <- abs(int_true - int_cop)
+    test_int_surv_cox <- abs(int_true - int_cox)
+    test_int_surv_aft <- abs(int_true - int_cox)
+    
+    val_b_cop_abs_test <- c(val_b_cop_abs_test, test_int_surv_cop)
+    val_b_cox_abs_test <- c(val_b_cox_abs_test, test_int_surv_cox)
+    val_b_aft_abs_test <- c(val_b_aft_abs_test, test_int_surv_aft)
+    
+    
+    val_b_cop_squared <- c(val_b_cop_squared, integral_cop)
+    val_b_cox_squared <- c(val_b_cox_squared, integral_cox)
+    val_b_aft_squared <- c(val_b_aft_squared, integral_aft)
+    
+    val_b_cop_squared_cens<- c(val_b_cop_squared_cens, integral_cop_cens)
+    val_b_cox_squared_cens <- c(val_b_cox_squared_cens, integral_cox_cens)
+    
+    val_b_cop_abs <- c(val_b_cop_abs, integral_cop_abs)
+    val_b_cox_abs <- c(val_b_cox_abs, integral_cox_abs)
+    val_b_aft_abs <- c(val_b_aft_abs, integral_aft_abs)
+    
+    val_b_cop_abs_cens <- c(val_b_cop_abs_cens, integral_cop_abs_cens)
+    val_b_cox_abs_cens <- c(val_b_cox_abs_cens, integral_cox_abs_cens)
+  }
+  
+  Performance <- list()
+  Performance$Integrated_abs <- list(CopulaSurvival = val_b_cop_abs,
+                                     CopulaCensoring = val_b_cop_abs_cens,
+                                     CoxSurvival = val_b_cox_abs, 
+                                     CoxCensoring = val_b_cox_abs_cens,
+                                     AFTSurvival = val_b_aft_abs)
+  
+  Performance$Integrated_abs_test <- list(CopulaSurvival = val_b_cop_abs_test,
+                                         CoxSurvival = val_b_cox_abs_test, 
+                                         AFTSurvival = test_int_surv_aft
+  )
+  
+  Performance$Integrated_squared <- list(CopulaSurvival = val_b_cop_squared,
+                                         CopulaCensoring = val_b_cop_squared_cens, 
+                                         CoxSurvival =  val_b_cox_squared,
+                                         CoxCensoring = val_b_cox_squared_cens,
+                                         AFTSurvival = val_b_aft_squared)
+  
+  
+  # ---- C-Index
+  Cindex_depcens <- concordance(Surv(test$Y, test$d) ~ pred.depCens$pred.mu1)$concordance
+  pred_cox <- -pred.glm
+  Cindex_cox <- concordance(Surv(test$Y, test$d) ~ pred_cox)$concordance
+  Cindex_aft <- concordance(Surv(test$Y, test$d) ~ pred.aft$pred.mu)$concordance
+
+  Performance$CIndex <- list(DepCens = Cindex_depcens,
+                             Cox = Cindex_cox,
+                             AFT = Cindex_aft)
+  
+  # ---- Brier Score
+  ComputeBrierScore <- function(S_hat, G_hat_atT, G_hat_atTSTAR, delta, time_star, time_i){
+    
+    S_hat <- pdffz(S_hat)
+    
+    G_hat_atT <- pdffz(G_hat_atT)
+    
+    G_hat_atTSTAR <- pdffz(G_hat_atTSTAR)
+    
+    Term1 <- ( S_hat )^2 / ( G_hat_atT )
+    
+    Term2 <- ( 1 - S_hat )^2 / ( G_hat_atTSTAR ) 
+    
+    Case1 <- as.numeric((time_i < time_star) & delta == 1)
+    
+    Case2 <- as.numeric( (time_i >= time_star) )
+    
+    BS_i <- Term1*Case1 + Term2*Case2
+    
+    BS <- mean(BS_i)
+    
+    return(BS)
+    
+  }
+  
+  time_seq <- quantile(test$Y, probs = seq(0.05, 0.95, by = 0.05))
+
+  # Prediction for cox model
+  KM_Object_M1 <- survival::survfit(survival::Surv(Y, (1 - d) ) ~ 1, data = train)
+  M1_Baseline_Survival_COX <- survival::survfit(survival::Surv(Y, d) ~ 1, data = train) 
+  Cox_ResponsePreds <- exp(pred.glm)
+  ProbOfCens_M1 <- summary(KM_Object_M1, times = time_seq, extend = TRUE)$surv
+  M1_G_hat_star <- matrix(replicate(ProbOfCens_M1, n = nrow(test)), nrow = length(time_seq), ncol = nrow(test), byrow = FALSE)
+  
+  M1_S_hat_star_COX <- matrix(0, ncol = nrow(test), nrow = length(time_seq))
+  for(i in 1:length(time_seq)){
+    M1_S_hat_star_COX[i,] <- exp( - M1_Baseline_Survival_COX$cumhaz[i] * Cox_ResponsePreds )
+  }
+  
+  ProbOfCens_Test_M1 <- summary(KM_Object_M1, times = test$Y, extend = TRUE)$surv
+  M1_G_hat_test <- ProbOfCens_Test_M1
+  time_grid_matrix <- matrix(replicate(time_seq, n = nrow(test)), nrow = length(time_seq), ncol = nrow(test), byrow = FALSE)
+  
+  
+  BrierScores_COX <- sapply(1:length(time_seq), function(i) 
+    ComputeBrierScore(S_hat = M1_S_hat_star_COX[i,], 
+                      G_hat_atT = M1_G_hat_test, 
+                      G_hat_atTSTAR = M1_G_hat_star[i,], 
+                      delta = test$d, 
+                      time_star = time_grid_matrix[i,], 
+                      time_i = test$Y), 
+    simplify = TRUE)
+  BrierScores_COX <- ifelse(BrierScores_COX>1.5, 1,BrierScores_COX)
+  
+  
+  if(marg.fam == "weibull"){
+    M1_S_hat_star_aft <- t(sapply(1:length(time_seq), function(i) 
+      pweibull(q = time_grid_matrix[i,], scale = pred.aft$pred.mu, shape = pred.aft$pred.sigma , lower.tail = F), simplify = TRUE))
+  }else{
+    M1_S_hat_star_aft <- t(sapply(1:length(time_seq), function(i) 
+      plnorm(q = time_grid_matrix[i,], meanlog = pred.aft$pred.mu ,sdlog = pred.aft$pred.sigma , lower.tail = F), simplify = TRUE))
+  }
+
+  
+  BrierScores_aft <- sapply(1:length(time_seq), function(i) 
+    ComputeBrierScore(S_hat = M1_S_hat_star_aft[i,], 
+                      G_hat_atT = M1_G_hat_test, 
+                      G_hat_atTSTAR = M1_G_hat_star[i,], 
+                      delta = test$d, 
+                      time_star = time_grid_matrix[i,], 
+                      time_i = test$Y), 
+    simplify = TRUE)
+  BrierScores_aft <- ifelse(BrierScores_aft>1.5, 1,BrierScores_aft)
+  
+  ### --- Copula 
+  if(marg.fam == "weibull"){
+    M1_S_hat_star <- t(sapply(1:length(time_seq), function(i) 
+      pweibull(q = time_grid_matrix[i,], scale = (pred.depCens$pred.mu1) ,shape = (pred.depCens$pred.sigma1),lower.tail = F), simplify = TRUE))
+    
+    M2_S_hat_star <- t(sapply(1:length(time_seq), function(i) 
+      pweibull(q = time_grid_matrix[i,], scale = (pred.depCens$pred.mu2) ,shape = (pred.depCens$pred.sigma2),lower.tail = F), simplify = TRUE))
+    
+    M1_G_hat_test_cop <-  pweibull(q = test$Y, scale = (pred.depCens$pred.mu2) ,shape = (pred.depCens$pred.sigma2),lower.tail = F)
+  }else{
+    M1_S_hat_star <- t(sapply(1:length(time_seq), function(i) 
+      plnorm(q = time_grid_matrix[i,], meanlog = (pred.depCens$pred.mu1) ,sdlog = (pred.depCens$pred.sigma1),lower.tail = F), simplify = TRUE))
+    
+    M2_S_hat_star <- t(sapply(1:length(time_seq), function(i) 
+      plnorm(q = time_grid_matrix[i,], meanlog = (pred.depCens$pred.mu2) ,sdlog = (pred.depCens$pred.sigma2),lower.tail = F), simplify = TRUE))
+    
+    M1_G_hat_test_cop <-  plnorm(q = test$Y, meanlog = (pred.depCens$pred.mu2) ,sdlog = (pred.depCens$pred.sigma2),lower.tail = F)
+  }
+  
+  
+  BrierScores_depcens <- sapply(1:length(time_seq), function(i) 
+    ComputeBrierScore(S_hat = M1_S_hat_star[i,], 
+                      G_hat_atT = M1_G_hat_test_cop, 
+                      G_hat_atTSTAR = M2_S_hat_star[i,], 
+                      delta = test$d, 
+                      time_star = time_grid_matrix[i,], 
+                      time_i = test$Y), 
+    simplify = TRUE)
+  BrierScores_depcens <- ifelse(BrierScores_depcens>1.5, 1,BrierScores_depcens)
+  
+
+  
+  Performance$BrierScore <- list(DepCens = BrierScores_depcens,
+                                 Cox = BrierScores_COX,
+                                 AFT = BrierScores_aft)
+  
+  Performance$MeanBrierScore <- list(DepCens = mean(BrierScores_depcens),
+                                 Cox = mean(BrierScores_COX),
+                                 AFT = mean(BrierScores_aft))
+  
+  
+  # ---- Integrated Brier Score
+  ComputeBrierScore_ForIntegration_fromCOX <- function(x, time_i, 
+                                                       SurvObject,
+                                                       delta, 
+                                                       baselineCumuHazardObject,
+                                                       CoxHazardsPreds){
+    
+    x_star <- x
+    
+    BaselineCUMUHAZ <- summary(baselineCumuHazardObject, times = x_star, extend = TRUE, cumhaz = TRUE)$cumhaz
+    
+    # Obtain Survival probability at 
+    G_hat_atT     <- summary(SurvObject, times = time_i, extend = TRUE)$surv
+    G_hat_atTSTAR <- summary(SurvObject, times = x_star, extend = TRUE)$surv
+    
+    S_hat <- vector(mode = "numeric", length = length(delta))
+    
+    for( i in 1:length(delta)){
+      
+      S_hat[i] <- exp( - BaselineCUMUHAZ * CoxHazardsPreds[i] )
+      
+    }
+    
+    S_hat <- pdffz(S_hat)
+    G_hat_atT <- pdffz(G_hat_atT)
+    G_hat_atTSTAR <- pdffz(G_hat_atTSTAR)
+    
+    Term1 <- ( S_hat )^2 / ( G_hat_atT )
+    
+    Term2 <- ( 1 - S_hat )^2 / ( G_hat_atTSTAR ) 
+    
+    Case1 <- as.numeric( ( time_i < x_star ) & delta == 1)
+    
+    Case2 <- as.numeric( (time_i >= x_star ) )
+    
+    IBS <- mean(Term1*Case1 + Term2*Case2)
+    IBS <- ifelse(IBS>1,1,IBS)
+    
+    return(IBS)
+    
+  }
+ 
+  
+  IntegratedBrier_COX_Def <- 0
+  tryCatch({
+    IntegratedBrier_COX <- integrate(f = Vectorize(ComputeBrierScore_ForIntegration_fromCOX, vectorize.args = "x"), 
+                                     lower = 0, upper = max(time_seq), 
+                                     delta = test$d,
+                                     time_i = test$Y,
+                                     SurvObject = KM_Object_M1,
+                                     baselineCumuHazardObject = M1_Baseline_Survival_COX,
+                                     CoxHazardsPreds = Cox_ResponsePreds,
+                                     subdivisions = 2000)
+    
+    
+    IntegratedBrier_COX_Def <- 1 / max(time_seq) * IntegratedBrier_COX$value
+  }, error = function(e){
+    #Dependence <- 0
+    cat("Fehler aufgetreten", conditionMessage(e), "\n")
+  })
+ 
+  
+
+
+  ComputeBrierScore_ForIntegration <- function(x, time_i, 
+                                               delta, 
+                                               pred.mu1, pred.sigma1, 
+                                               pred.mu2,
+                                               pred.sigma2,
+                                               marg.fam ){
+    
+    x_star <- x
+    if(marg.fam == "weibull"){
+      G_hat_atT <- pweibull(q = time_i, scale = (pred.mu2) ,shape = (pred.sigma2),lower.tail = F)
+      G_hat_atTSTAR <- pweibull(q = x_star, scale = (pred.mu2) ,shape = (pred.sigma2),lower.tail = F)
+    }else{
+      G_hat_atT <- plnorm(q = time_i, meanlog = (pred.mu2) ,sdlog = (pred.sigma2),lower.tail = F)
+      G_hat_atTSTAR <- plnorm(q = x_star, meanlog = (pred.mu2) ,sdlog = (pred.sigma2),lower.tail = F)
+    }
+  
+    
+    S_hat <- vector(mode = "numeric", length = length(pred.mu1))
+    for( i in 1:length(pred.mu1)){
+      if(marg.fam == "weibull"){
+        S_hat[i] <- pweibull(q = x_star, scale = pred.mu1[i], shape = (pred.sigma1[i]), lower.tail = FALSE)
+      }else{
+        S_hat[i] <- plnorm(q = x_star, meanlog = (pred.mu1[i]) ,sdlog = (pred.sigma1[i]),lower.tail = F)
+      }
+    }
+    
+    S_hat <- pdffz(S_hat)
+    G_hat_atT <- pdffz(G_hat_atT)
+    G_hat_atTSTAR <- pdffz(G_hat_atTSTAR)
+    
+    Term1 <- ( S_hat )^2 / ( G_hat_atT )
+    
+    Term2 <- ( 1 - S_hat )^2 / ( G_hat_atTSTAR ) 
+    
+    Case1 <- as.numeric( ( time_i < x_star ) & delta == 1)
+    
+    Case2 <- as.numeric( (time_i >= x_star ) )
+    
+    IBS <- mean(Term1*Case1 + Term2*Case2)
+    IBS <- ifelse(IBS>1,1,IBS)
+    
+    return(IBS)
+  }
+  
+  
+  IntegratedBrier_M1_Def <- 0
+  tryCatch({
+    IntegratedBrier_M1 <- integrate(f = Vectorize(ComputeBrierScore_ForIntegration, vectorize.args = "x"), 
+                                    marg.fam = marg.fam, 
+                                    pred.mu1 = pred.depCens$pred.mu1, 
+                                    pred.sigma1 = pred.depCens$pred.sigma1,
+                                    pred.mu2 = pred.depCens$pred.mu2,
+                                    pred.sigma2 = pred.depCens$pred.sigma2,
+                                    delta = test$d,
+                                    time_i = test$Y,
+                                    lower = 0, upper = max(time_seq), 
+                                    subdivisions = 2000)
+    
+    
+    IntegratedBrier_M1_Def <- 1 / max(time_seq) * IntegratedBrier_M1$value
+  }, error = function(e){
+
+    cat("Fehler aufgetreten", conditionMessage(e), "\n")
+  })
+
+  
+  # AFT
+  ComputeBrierScore_ForIntegration <- function(x, time_i, 
+                                               SurvObject,
+                                               delta, 
+                                               pred.mu, pred.sigma, marg.fam){
+    
+    x_star <- x
+
+    # Obtain Survival probability at 
+    G_hat_atT     <- summary(SurvObject, times = time_i, extend = TRUE)$surv
+    G_hat_atTSTAR <- summary(SurvObject, times = x_star, extend = TRUE)$surv
+    
+    S_hat <- vector(mode = "numeric", length = length(pred.mu))
+    
+    for( i in 1:length(pred.mu)){
+      
+      if(marg.fam == "weibull"){
+        S_hat[i] <- 1 - pweibull(q = x_star, scale = pred.mu[i], shape = pred.sigma[i])
+      }else{
+        S_hat[i] <- 1 - plnorm(q = x_star, meanlog = pred.mu[i], sdlog = pred.sigma[i])
+      }
+    }
+    
+    
+    S_hat <- pdffz(S_hat)
+    G_hat_atT <- pdffz(G_hat_atT)
+    G_hat_atTSTAR <- pdffz(G_hat_atTSTAR)
+    
+    Term1 <- ( S_hat )^2 / ( G_hat_atT )
+    
+    Term2 <- ( 1 - S_hat )^2 / ( G_hat_atTSTAR ) 
+    
+    Case1 <- as.numeric( ( time_i < x_star ) & delta == 1)
+    
+    Case2 <- as.numeric( (time_i >= x_star ) )
+    
+    IBS <- mean(Term1*Case1 + Term2*Case2)
+    IBS <- ifelse(IBS>1,1,IBS)
+    
+    return(IBS)
+  }
+  
+  IntegratedBrier_AFT_Def <- 0
+  tryCatch({
+    IntegratedBrier_AFT <- integrate(f = Vectorize(ComputeBrierScore_ForIntegration, vectorize.args = "x"), 
+                                     marg.fam = marg.fam, 
+                                     pred.mu =  pred.aft$pred.mu, 
+                                     pred.sigma =  pred.aft$pred.sigma,
+                                     SurvObject = KM_Object_M1,
+                                     delta = test$d,
+                                     time_i = test$Y,
+                                     lower = 0, upper = max(time_seq), 
+                                     subdivisions = 2000)
+    
+    
+    
+    IntegratedBrier_AFT_Def <- 1 / max(time_seq) * IntegratedBrier_AFT$value
+    
+  }, error = function(e){
+    #Dependence <- 0
+    cat("Fehler aufgetreten", conditionMessage(e), "\n")
+  })  
+  
+  Performance$IntegratedBrierScore <- list(DepCens = IntegratedBrier_M1_Def,
+                                 Cox = IntegratedBrier_COX_Def,
+                                 AFT = IntegratedBrier_AFT_Def)
+  
+  print(seed)
+  
+  return(list(CensoringRate = CensoringRate, Dependence = Dependence, Coefficents=Coefficents, MSTOP_total=MSTOP_total, Prediction=Prediction, Performance = Performance, Runtime=Runtime))  # test, train ??
+ 
+}
+
+p = 10
+censoring = 50
+n.train = 1000
+n.mstop = 1000
+n.test  = 1000
+step.length = 0.01
+fam = 1 # 4 Gumbel, 1 Gaussian, 3 Clayton
+marg.fam ="weibull"
+
+results <- mclapply(1:150, sims, p = p, censoring = censoring, n.train = n.train, n.mstop = n.mstop, n.test = n.test, step.length = step.length,  fam = fam, marg.fam = marg.fam, indep = indep, mc.cores = 50, mc.preschedule = FALSE)
+
+
+results$p = p 
+results$n.train = n.train
+results$n.mstop = n.mstop
+results$n.test = n.test
+results$step.length = step.length
+results$fam = fam
+results$marg.fam = marg.fam
+results$indep = indep
+results$censoring = censoring
+
+save(results, file=paste0("SimulationDepCens_Variable",p,"_Copula",fam,"_Margin_", marg.fam, "_censoring",censoring,".RData"))
