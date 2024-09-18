@@ -277,14 +277,15 @@ Custom_WeibullFamily <- function (mu = NULL,  sigma = NULL, stabilization = c("n
 sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01, fam, marg.fam){
 
   set.seed(seed+3)  
+  n = n.mstop + n.train
   data.train <- as.data.frame(matrix(NA, ncol = p+2, nrow=n))
   names(data.train) <- c("Y","d", paste0("x", 1:p))
   
   for(i in (1+2):(p+2)) data.train[,i] <- runif(n, -1, 1) 
-  z1 <- data[, 3]
-  z2 <- data[, 4]
-  z3 <- data[, 5]
-  z4 <- data[, 6]
+  z1 <- data.train[, 3]
+  z2 <- data.train[, 4]
+  z3 <- data.train[, 5]
+  z4 <- data.train[, 6]
 
   test <- as.data.frame(matrix(NA, ncol = p+2, nrow=n.test))
   names(test) <- c("Y","d", paste0("x", 1:p))
@@ -307,12 +308,12 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
       eta_sigma1_test <-  0.7  + 0.7*w3
       eta_mu2_test <- 0.8 - 1* w2 + 1.5*w4
       eta_sigma2_test <- 0.5 * w2
-  T1 <- rweibull(n, scale = exp(eta_mu1), shape = exp(eta_sigma1)) 
-  C  <- rweibull(n, scale = exp(eta_mu2), shape = exp(eta_sigma2)) 
-  T1_test <- rweibull(n.test, scale = exp(eta_mu1_test), shape = exp(eta_sigma1_test)) 
-  C_test <- rweibull(n.test, scale = exp(eta_mu2_test), shape = exp(eta_sigma2_test)) 
-    }
-}else{
+      T1 <- rweibull(n, scale = exp(eta_mu1), shape = exp(eta_sigma1)) 
+      C  <- rweibull(n, scale = exp(eta_mu2), shape = exp(eta_sigma2)) 
+      T1_test <- rweibull(n.test, scale = exp(eta_mu1_test), shape = exp(eta_sigma1_test)) 
+      C_test <- rweibull(n.test, scale = exp(eta_mu2_test), shape = exp(eta_sigma2_test)) 
+  
+  }else{
       eta_mu1 <- -0.9 +  2 * z1 + 1*z3
       eta_sigma1 <-   0.7  + 0.7*z3
       eta_mu2 <-  0.8 -1* z2 + 1.5*z4
@@ -322,11 +323,12 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
       eta_sigma1_test <-  0.7  + 0.7*w3
       eta_mu2_test <- 0.8 - 1* w2 + 1.5*w4
       eta_sigma2_test <- 0.5 * w2
-  T1 <- rlnorm(n = n, meanlog = eta_mu1, sdlog = exp(eta_sigma1))
-  C <- rlnorm(n = n, meanlog = eta_mu2, sdlog = exp(eta_sigma2))
-  
-  T1_test <- rlnorm(n = n.test, meanlog = eta_mu1_test, sdlog = exp(eta_sigma1_test))
-  C_test <- rlnorm(n = n.test, meanlog = eta_mu2_test, sdlog = exp(eta_sigma2_test))
+      T1 <- rlnorm(n = n, meanlog = eta_mu1, sdlog = exp(eta_sigma1))
+      C <- rlnorm(n = n, meanlog = eta_mu2, sdlog = exp(eta_sigma2))
+      
+      T1_test <- rlnorm(n = n.test, meanlog = eta_mu1_test, sdlog = exp(eta_sigma1_test))
+      C_test <- rlnorm(n = n.test, meanlog = eta_mu2_test, sdlog = exp(eta_sigma2_test))
+  }
 }else if(censoring == 50){
     if(marg.fam == "weibull"){
       eta_mu1 <- 0.7 +  2 * z1 + 1*z3
@@ -399,8 +401,8 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
 
 
 
-  data_train[,1] <- pmin(T1, C)
-  data_train[,2] <- as.numeric(data_train[,1] == T1)
+  data.train[,1] <- pmin(T1, C)
+  data.train[,2] <- as.numeric(data.train[,1] == T1)
  
 
   test[,1] <- pmin(T1_test, C_test)
@@ -438,8 +440,7 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
     mod[3000]
   }
   MSTOP <- which.min(risk(mod,merge = T))
-  
-  
+    
   if(MSTOP >= 2990){
     mod[3500]
   }
@@ -467,8 +468,7 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
   if(MSTOP >= 5990){
     mod[8000]
   }
-  
-  
+    
   MSTOP <- which.min(risk(mod, merge=T))
   
   if(MSTOP >= 7990){
@@ -500,8 +500,7 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
   }
   
   MSTOP <- which.min(risk(mod, merge=T))
-  
-  
+    
   if(MSTOP >= 18990){
     mod[20000]
   }
@@ -708,8 +707,7 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
     abs_y_diff_cox_cens <- abs(y_true_cens - y_est_cox_cens)
     integral_cop_abs_cens <- sum( (abs_y_diff_cop_cens[-1] + abs_y_diff_cop_cens[-length(abs_y_diff_cop_cens)] ) * h / 2)
     integral_cox_abs_cens <- sum( (abs_y_diff_cox_cens[-1] + abs_y_diff_cox_cens[-length(abs_y_diff_cox_cens)] ) * h / 2)
-  
-       
+         
     int_true <- sum( (y_true[-1] + y_true[-length(y_true)] ) * h / 2)
     int_cop <-  sum( (y_est[-1] + y_est[-length(y_est)] ) * h / 2)
     int_cox <-  sum( (y_est_cox[-1] + y_est_cox[-length(y_est_cox)] ) * h / 2)
@@ -863,7 +861,6 @@ sim <- function(seed, p, censoring, n.train, n.mstop, n.test, step.length = 0.01
     simplify = TRUE)
   BrierScores_depcens <- ifelse(BrierScores_depcens>1.5, 1,BrierScores_depcens)
   
-
   
   Performance$BrierScore <- list(DepCens = BrierScores_depcens,
                                  Cox = BrierScores_COX,
