@@ -277,9 +277,6 @@ Custom_WeibullFamily <- function (mu = NULL,  sigma = NULL, stabilization = c("n
 
 
 
-
-
-
 #############################################################################################################
 #############################################################################################################
 #############################################################################################################
@@ -320,14 +317,12 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
         y2[i] <- vect[,2]
     }
     }
-   
     
     Y <- pmin(y1,y2)
     d1 <- as.numeric(Y == y1)
     
     return(data.frame(Y,d = d1))
   }
-  
 
   
   ######################################################################################
@@ -432,7 +427,7 @@ sims <- function(seed, p , censoring, n.train, n.mstop, n.test, step.length = 0.
   sigma2_test  <- exp(eta_sigma2_test)
   
   if(fam == 5) rho <- eta_theta; rho_test = eta_theta_test
-  if(fam == 4) rho <- exp(eta_theta)  + 1e-07; rho_test <- exp(eta_theta_test) + 1e-07
+  if(fam == 4) rho <- exp(eta_theta)  + 1; rho_test <- exp(eta_theta_test) + 1
   if(fam == 3) rho <- exp(eta_theta) + 1e-07; rho_test <- exp(eta_theta_test) + 1e-07
   if(fam == 1){
     rho <- tanh(eta_theta)
