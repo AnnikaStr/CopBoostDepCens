@@ -14,7 +14,7 @@ n = 2000
 
 set.seed(seed+3)
 
-# data generation
+#--- data generation
 X_train <- matrix(NA, ncol = p, nrow = n)
 for(i in 1:p)  X_train[,i] <- runif(n, -1, 1)
 colnames(X_train) <- paste0("X", 1:p)
@@ -46,6 +46,7 @@ for(i in 1:length(mu1)){
 Y <- pmin(y1,y2)
 d <- as.numeric(Y == y1)
 train <-  data.frame(Y,d, X_train)
+#---
 
 # fit model via noncyclic gamboostLSS
 mod <- glmboostLSS(cbind(Y,d)~., data= train, families = Gauss_Cop_depCens(marg1 = "WEI", marg2 = "WEI"), 
