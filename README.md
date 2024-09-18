@@ -4,15 +4,14 @@ A model-based boosting approach to deal with dependent censoring.
 
 ## Example
 ```
+# load packages
 library(copula)
 library(gamboostLSS)
-
-source("Copulas/Gauss_dependentC.R")
 
 p = 10
 n = 2000
 
-set.seed(seed+3)
+set.seed(4)
 
 #--- data generation
 X_train <- matrix(NA, ncol = p, nrow = n)
