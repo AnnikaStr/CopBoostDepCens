@@ -49,7 +49,7 @@ train <-  data.frame(Y,d, X_train)
 
 # fit model via noncyclic gamboostLSS
 mod <- glmboostLSS(cbind(Y,d)~., data= train, families = Gauss_Cop_depCens(marg1 = "WEI", marg2 = "WEI"), 
-                   control = boost_control(nu=0.01, mstop=2000, risk = "oobag", trace = T
+                   control = boost_control(nu=0.01, mstop=2000, trace = T
                    ), method = "noncyclic")
 
 
